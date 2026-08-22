@@ -1,0 +1,10 @@
+# TradingView/Pine workspace files
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+
+# Local research artifacts
+*.csv
+*.json
+__pycache__/
