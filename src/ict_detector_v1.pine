@@ -110,12 +110,14 @@ var int shortMicroLowBar = na
 var box longFvgBox = na
 var box shortFvgBox = na
 
+// Only an idle directional setup can accept a new sweep. This prevents a later
+// sweep from silently overwriting an active FVG/retracement setup and its box.
 // The sweep must precede the displacement/MSS/FVG bar.
-if bullishSslSweep
+if bullishSslSweep and longState == 0
     longState := 1
     longSweepExtreme := low
     longSweepBar := bar_index
-if bearishBslSweep
+if bearishBslSweep and shortState == 0
     shortState := 1
     shortSweepExtreme := high
     shortSweepBar := bar_index
@@ -205,8 +207,9 @@ if shortState2Expired
         box.set_right(shortFvgBox, bar_index)
         shortFvgBox := na
 
-longRetracement = longState == 2 and bar_index > longMssBar and f_enters_zone(longFvgTop, longFvgBottom)
-shortRetracement = shortState == 2 and bar_index > shortMssBar and f_enters_zone(shortFvgTop, shortFvgBottom)
+// Retracement changes state only after candle close; intrabar touches are provisional.
+longRetracement = barstate.isconfirmed and longState == 2 and bar_index > longMssBar and f_enters_zone(longFvgTop, longFvgBottom)
+shortRetracement = barstate.isconfirmed and shortState == 2 and bar_index > shortMssBar and f_enters_zone(shortFvgTop, shortFvgBottom)
 
 if longRetracement
     longState := 3
