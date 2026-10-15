@@ -99,3 +99,15 @@ After a valid retracement, form a confirmed micro pivot with its actual referenc
 ## 23. Invalid Micro MSS from pre-retracement pivot
 
 Use a micro pivot that is confirmed after retracement but whose actual reference bar is before retracement. Close beyond its level. Expect neither a direction-matched Micro MSS nor a final signal.
+
+
+## 24. Repeated same-direction sweep replaces active FVG
+
+1. Construct a bullish setup through State 2 (active bullish FVG), optionally advance to State 3 (retraced).
+2. Trigger another confirmed bullish SSL sweep before the existing setup emits a LONG.
+3. Expect the previous bullish FVG box to stop at the new sweep bar, and expect the old retracement and micro-swing values to be discarded.
+4. Verify that the original setup cannot emit a LONG after the new sweep. Only the new sweep's subsequent displacement/MSS/FVG/retracement/micro MSS sequence may signal.
+5. Repeat the inverse for bearish BSL sweeps and SHORT setups.
+6. Verify a new bullish sweep never erases an unrelated active bearish box or short state, and vice versa.
+
+This is a visual/manual TradingView regression case. A local text inspection is **not** equivalent to Pine compilation or Bar Replay validation.
