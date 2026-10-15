@@ -110,12 +110,35 @@ var int shortMicroLowBar = na
 var box longFvgBox = na
 var box shortFvgBox = na
 
-// The sweep must precede the displacement/MSS/FVG bar.
+// A fresh sweep supersedes any unfinished setup in its direction.
+// Retire the old box and clear stale structure before starting the new setup.
 if bullishSslSweep
+    if not na(longFvgBox)
+        box.set_right(longFvgBox, bar_index)
+        longFvgBox := na
+    longFvgTop := na
+    longFvgBottom := na
+    longMssBar := na
+    longRetracementBar := na
+    longMicroHigh := na
+    longMicroHighBar := na
+    longMicroLow := na
+    longMicroLowBar := na
     longState := 1
     longSweepExtreme := low
     longSweepBar := bar_index
 if bearishBslSweep
+    if not na(shortFvgBox)
+        box.set_right(shortFvgBox, bar_index)
+        shortFvgBox := na
+    shortFvgTop := na
+    shortFvgBottom := na
+    shortMssBar := na
+    shortRetracementBar := na
+    shortMicroHigh := na
+    shortMicroHighBar := na
+    shortMicroLow := na
+    shortMicroLowBar := na
     shortState := 1
     shortSweepExtreme := high
     shortSweepBar := bar_index
