@@ -99,3 +99,7 @@ After a valid retracement, form a confirmed micro pivot with its actual referenc
 ## 23. Invalid Micro MSS from pre-retracement pivot
 
 Use a micro pivot that is confirmed after retracement but whose actual reference bar is before retracement. Close beyond its level. Expect neither a direction-matched Micro MSS nor a final signal.
+
+## 24. Retracement requires a confirmed candle
+
+On a realtime, not-yet-confirmed bar, let its developing high/low overlap the active FVG. Verify that no retracement event is committed before the candle closes. At the confirmed close, the retracement may register if the completed candle range overlaps the zone. Repeat for Long and Short. Compare Bar Replay behavior with historical bars.
