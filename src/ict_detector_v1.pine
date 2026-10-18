@@ -205,8 +205,8 @@ if shortState2Expired
         box.set_right(shortFvgBox, bar_index)
         shortFvgBox := na
 
-longRetracement = longState == 2 and bar_index > longMssBar and f_enters_zone(longFvgTop, longFvgBottom)
-shortRetracement = shortState == 2 and bar_index > shortMssBar and f_enters_zone(shortFvgTop, shortFvgBottom)
+longRetracement = barstate.isconfirmed and longState == 2 and bar_index > longMssBar and f_enters_zone(longFvgTop, longFvgBottom)
+shortRetracement = barstate.isconfirmed and shortState == 2 and bar_index > shortMssBar and f_enters_zone(shortFvgTop, shortFvgBottom)
 
 if longRetracement
     longState := 3
