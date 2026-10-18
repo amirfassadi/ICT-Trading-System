@@ -103,3 +103,12 @@ Use a micro pivot that is confirmed after retracement but whose actual reference
 ## 24. Retracement requires a confirmed candle
 
 On a realtime, not-yet-confirmed bar, let its developing high/low overlap the active FVG. Verify that no retracement event is committed before the candle closes. At the confirmed close, the retracement may register if the completed candle range overlaps the zone. Repeat for Long and Short. Compare Bar Replay behavior with historical bars.
+
+
+## 25. Same-direction sweep replaces an active setup
+
+Create a valid Long FVG setup, then generate a new bullish SSL sweep before the Long signal. Expect the old Long FVG box to stop extending on the new sweep bar, the prior retracement/micro state to be cleared, and the new Long setup to require a fresh displacement + MSS + FVG. Repeat symmetrically for Short.
+
+## 26. Opposite-direction isolation during a replacement sweep
+
+With an active Short FVG and a separate Long candidate, generate a fresh bullish SSL sweep. Verify the Long reset does not close the Short FVG box or change its stored retracement and micro pivot state. Repeat with directions reversed.
