@@ -46,3 +46,7 @@ The indicator intentionally does not create orders or use a strategy declaration
 ## Future work
 
 Only after manual TradingView validation should the project consider Phase 2. Any strategy conversion must preserve event confirmation timing and explicitly define order, invalidation, and risk rules before implementation.
+
+## 2026-10-19 — TradingView compilation and smoke validation
+
+The unchanged V1 source compiled, was added to chart, and was saved privately in TradingView. Initial smoke checks passed on AAPL 1D, BTCUSDT 1D/15m and EURUSD 1h; input/display changes recalculated successfully and defaults were restored. No compiler fix was necessary. Intraday Replay was blocked by the Basic account's plan entitlement. The 24 manual behavioral cases remain pending systematic execution. See [validation report](tradingview-validation-2026-10-19.md) for evidence and exact limits.
