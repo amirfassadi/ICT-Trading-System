@@ -1,0 +1,400 @@
+//@version=6
+strategy("ICT V1 Research Backtest", "ICT V1 BT", overlay = true, max_boxes_count = 20, max_labels_count = 100, initial_capital = 10000, currency = currency.USD, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, pyramiding = 0, commission_type = strategy.commission.percent, commission_value = 0.1, slippage = 10, margin_long = 100, margin_short = 100, process_orders_on_close = false, calc_on_order_fills = false, calc_on_every_tick = false, use_bar_magnifier = false)
+
+// Research-only strategy wrapper; simulated orders, no broker connection.
+// Detector statements below are preserved from V1. See docs/backtest-protocol.md.
+btStart = input.time(timestamp("21 Jul 2026 00:00 +0000"), "Backtest start (UTC)", group = "Research Backtest")
+btEnd = input.time(timestamp("19 Oct 2026 00:00 +0000"), "Backtest end (UTC)", group = "Research Backtest")
+var float btStop = na
+var float btTarget = na
+var int btRejected = 0
+var int btEligible = 0
+var int btRejectedAt = na
+var string btRejectedReason = ""
+var string btRejectedLevels = ""
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs
+// ─────────────────────────────────────────────────────────────────────────────
+groupLogic = "Detection Parameters"
+swingLength = input.int(2, "Swing Length", minval = 1, group = groupLogic)
+atrLength = input.int(14, "ATR Length", minval = 1, group = groupLogic)
+displacementAtrMultiplier = input.float(1.5, "Displacement ATR Multiplier", minval = 0.0, step = 0.1, group = groupLogic)
+bodyRangeThreshold = input.float(0.70, "Minimum Body / Range", minval = 0.0, maxval = 1.0, step = 0.05, group = groupLogic)
+minimumFvgAtrMultiplier = input.float(0.10, "Minimum FVG ATR Multiplier", minval = 0.0, step = 0.05, group = groupLogic)
+maxSetupBars = input.int(20, "Maximum Setup Bars", minval = 1, group = groupLogic)
+
+showSwings = input.bool(true, "Show Swing High/Low", group = "Visualization")
+showLiquidity = input.bool(true, "Show BSL/SSL", group = "Visualization")
+showSweeps = input.bool(true, "Show Liquidity Sweeps", group = "Visualization")
+showDisplacement = input.bool(true, "Show Displacement", group = "Visualization")
+showMss = input.bool(true, "Show MSS", group = "Visualization")
+showFvg = input.bool(true, "Show FVG Zones", group = "Visualization")
+showRetracement = input.bool(true, "Show Retracement", group = "Visualization")
+showSignals = input.bool(true, "Show LONG/SHORT Signals", group = "Visualization")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reusable candle and event functions
+// ─────────────────────────────────────────────────────────────────────────────
+f_body() => math.abs(close - open)
+f_range() => high - low
+f_body_ratio() => f_range() > 0.0 ? f_body() / f_range() : 0.0
+f_bullish_displacement(float atr) => close > open and f_body() >= displacementAtrMultiplier * atr and f_body_ratio() >= bodyRangeThreshold
+f_bearish_displacement(float atr) => close < open and f_body() >= displacementAtrMultiplier * atr and f_body_ratio() >= bodyRangeThreshold
+f_bullish_fvg(float atr) => low > high[2] and low - high[2] >= minimumFvgAtrMultiplier * atr
+f_bearish_fvg(float atr) => high < low[2] and low[2] - high >= minimumFvgAtrMultiplier * atr
+f_enters_zone(float zoneTop, float zoneBottom) => high >= zoneBottom and low <= zoneTop
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Confirmed external swings and latest liquidity references
+// ─────────────────────────────────────────────────────────────────────────────
+confirmedSwingHigh = ta.pivothigh(high, swingLength, swingLength)
+confirmedSwingLow = ta.pivotlow(low, swingLength, swingLength)
+
+var float latestSwingHigh = na
+var int latestSwingHighBar = na
+var float latestSwingLow = na
+var int latestSwingLowBar = na
+
+// Snapshot references before updating them with pivots confirmed on this bar.
+// A newly confirmed pivot cannot be the preceding structure reference.
+referenceSwingHigh = latestSwingHigh
+referenceSwingHighBar = latestSwingHighBar
+referenceSwingLow = latestSwingLow
+referenceSwingLowBar = latestSwingLowBar
+
+if not na(confirmedSwingHigh)
+    latestSwingHigh := confirmedSwingHigh
+    latestSwingHighBar := bar_index - swingLength
+if not na(confirmedSwingLow)
+    latestSwingLow := confirmedSwingLow
+    latestSwingLowBar := bar_index - swingLength
+
+// The current bar is the first bar on which a confirmed pivot is available.
+newSwingHigh = not na(confirmedSwingHigh)
+newSwingLow = not na(confirmedSwingLow)
+
+// Strict same-candle reclaim; the reference must predate the current bar.
+bullishSslSweep = barstate.isconfirmed and not na(referenceSwingLow) and not na(referenceSwingLowBar) and referenceSwingLowBar < bar_index and low < referenceSwingLow and close > referenceSwingLow
+bearishBslSweep = barstate.isconfirmed and not na(referenceSwingHigh) and not na(referenceSwingHighBar) and referenceSwingHighBar < bar_index and high > referenceSwingHigh and close < referenceSwingHigh
+
+atr = ta.atr(atrLength)
+bullishDisplacement = barstate.isconfirmed and f_bullish_displacement(atr)
+bearishDisplacement = barstate.isconfirmed and f_bearish_displacement(atr)
+
+// MSS is deliberately separate from displacement and uses a confirmed close.
+bullishMss = barstate.isconfirmed and not na(referenceSwingHigh) and referenceSwingHighBar < bar_index and close > referenceSwingHigh
+bearishMss = barstate.isconfirmed and not na(referenceSwingLow) and referenceSwingLowBar < bar_index and close < referenceSwingLow
+
+bullishFvg = barstate.isconfirmed and bar_index >= 2 and f_bullish_fvg(atr)
+bearishFvg = barstate.isconfirmed and bar_index >= 2 and f_bearish_fvg(atr)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Directional setup state
+// 0 = idle, 1 = sweep observed, 2 = FVG active, 3 = retracement observed
+// ─────────────────────────────────────────────────────────────────────────────
+var int longState = 0
+var int shortState = 0
+var float longFvgTop = na
+var float longFvgBottom = na
+var float shortFvgTop = na
+var float shortFvgBottom = na
+var float longSweepExtreme = na
+var float shortSweepExtreme = na
+var int longSweepBar = na
+var int shortSweepBar = na
+var int longMssBar = na
+var int shortMssBar = na
+var int longRetracementBar = na
+var int shortRetracementBar = na
+
+var float longMicroHigh = na
+var int longMicroHighBar = na
+var float longMicroLow = na
+var int longMicroLowBar = na
+var float shortMicroHigh = na
+var int shortMicroHighBar = na
+var float shortMicroLow = na
+var int shortMicroLowBar = na
+
+var box longFvgBox = na
+var box shortFvgBox = na
+
+// The sweep must precede the displacement/MSS/FVG bar.
+if bullishSslSweep
+    longState := 1
+    longSweepExtreme := low
+    longSweepBar := bar_index
+if bearishBslSweep
+    shortState := 1
+    shortSweepExtreme := high
+    shortSweepBar := bar_index
+
+// State 1 expires if the displacement + MSS + FVG event is too late.
+longState1Expired = longState == 1 and not na(longSweepBar) and bar_index - longSweepBar > maxSetupBars
+shortState1Expired = shortState == 1 and not na(shortSweepBar) and bar_index - shortSweepBar > maxSetupBars
+
+if longState1Expired
+    longState := 0
+    longSweepExtreme := na
+    longSweepBar := na
+    longMssBar := na
+    longRetracementBar := na
+    longFvgTop := na
+    longFvgBottom := na
+    longMicroHigh := na
+    longMicroHighBar := na
+    longMicroLow := na
+    longMicroLowBar := na
+    if not na(longFvgBox)
+        box.set_right(longFvgBox, bar_index)
+        longFvgBox := na
+if shortState1Expired
+    shortState := 0
+    shortSweepExtreme := na
+    shortSweepBar := na
+    shortMssBar := na
+    shortRetracementBar := na
+    shortFvgTop := na
+    shortFvgBottom := na
+    shortMicroHigh := na
+    shortMicroHighBar := na
+    shortMicroLow := na
+    shortMicroLowBar := na
+    if not na(shortFvgBox)
+        box.set_right(shortFvgBox, bar_index)
+        shortFvgBox := na
+
+// Exclude a same-candle sweep: the sequence requires sweep, then movement.
+longSetupFvg = longState == 1 and not bullishSslSweep and bullishDisplacement and bullishMss and bullishFvg and not na(longSweepExtreme)
+shortSetupFvg = shortState == 1 and not bearishBslSweep and bearishDisplacement and bearishMss and bearishFvg and not na(shortSweepExtreme)
+
+if longSetupFvg
+    longState := 2
+    longFvgTop := low
+    longFvgBottom := high[2]
+    longMssBar := bar_index
+if shortSetupFvg
+    shortState := 2
+    shortFvgTop := low[2]
+    shortFvgBottom := high
+    shortMssBar := bar_index
+
+// State 2 expires if price does not retrace into its FVG in time.
+longState2Expired = longState == 2 and not na(longMssBar) and bar_index - longMssBar > maxSetupBars
+shortState2Expired = shortState == 2 and not na(shortMssBar) and bar_index - shortMssBar > maxSetupBars
+
+if longState2Expired
+    longState := 0
+    longSweepExtreme := na
+    longSweepBar := na
+    longMssBar := na
+    longRetracementBar := na
+    longFvgTop := na
+    longFvgBottom := na
+    longMicroHigh := na
+    longMicroHighBar := na
+    longMicroLow := na
+    longMicroLowBar := na
+    if not na(longFvgBox)
+        box.set_right(longFvgBox, bar_index)
+        longFvgBox := na
+if shortState2Expired
+    shortState := 0
+    shortSweepExtreme := na
+    shortSweepBar := na
+    shortMssBar := na
+    shortRetracementBar := na
+    shortFvgTop := na
+    shortFvgBottom := na
+    shortMicroHigh := na
+    shortMicroHighBar := na
+    shortMicroLow := na
+    shortMicroLowBar := na
+    if not na(shortFvgBox)
+        box.set_right(shortFvgBox, bar_index)
+        shortFvgBox := na
+
+longRetracement = barstate.isconfirmed and longState == 2 and bar_index > longMssBar and f_enters_zone(longFvgTop, longFvgBottom)
+shortRetracement = barstate.isconfirmed and shortState == 2 and bar_index > shortMssBar and f_enters_zone(shortFvgTop, shortFvgBottom)
+
+if longRetracement
+    longState := 3
+    longRetracementBar := bar_index
+    longMicroHigh := na
+    longMicroHighBar := na
+    longMicroLow := na
+    longMicroLowBar := na
+if shortRetracement
+    shortState := 3
+    shortRetracementBar := bar_index
+    shortMicroHigh := na
+    shortMicroHighBar := na
+    shortMicroLow := na
+    shortMicroLowBar := na
+
+microSwingHigh = ta.pivothigh(high, swingLength, swingLength)
+microSwingLow = ta.pivotlow(low, swingLength, swingLength)
+microSwingHighBar = bar_index - swingLength
+microSwingLowBar = bar_index - swingLength
+
+// A pivot confirmed after retracement is usable only when its actual
+// reference/formation bar is also after that retracement bar.
+if longState == 3 and not na(longRetracementBar)
+    if not na(microSwingHigh) and microSwingHighBar > longRetracementBar
+        longMicroHigh := microSwingHigh
+        longMicroHighBar := microSwingHighBar
+    if not na(microSwingLow) and microSwingLowBar > longRetracementBar
+        longMicroLow := microSwingLow
+        longMicroLowBar := microSwingLowBar
+if shortState == 3 and not na(shortRetracementBar)
+    if not na(microSwingHigh) and microSwingHighBar > shortRetracementBar
+        shortMicroHigh := microSwingHigh
+        shortMicroHighBar := microSwingHighBar
+    if not na(microSwingLow) and microSwingLowBar > shortRetracementBar
+        shortMicroLow := microSwingLow
+        shortMicroLowBar := microSwingLowBar
+
+bullishMicroMss = barstate.isconfirmed and longState == 3 and not na(longMicroHigh) and longMicroHighBar > longRetracementBar and close > longMicroHigh
+bearishMicroMss = barstate.isconfirmed and shortState == 3 and not na(shortMicroLow) and shortMicroLowBar > shortRetracementBar and close < shortMicroLow
+
+longSignal = barstate.isconfirmed and bullishMicroMss
+shortSignal = barstate.isconfirmed and bearishMicroMss
+
+// Snapshot risk levels BEFORE the detector resets its completed setup.
+// Entry at next available tick (normally next bar open), fixed signal-time bracket.
+btInWindow = time >= btStart and time_close < btEnd
+if barstate.isconfirmed and btInWindow and strategy.position_size == 0
+    if longSignal and not shortSignal
+        if not na(longSweepExtreme) and not na(latestSwingHigh) and longSweepExtreme - syminfo.mintick < close and latestSwingHigh > close
+            btStop := longSweepExtreme - syminfo.mintick
+            btTarget := latestSwingHigh
+            btEligible += 1
+            strategy.entry("Long", strategy.long)
+            strategy.exit("Long bracket", "Long", stop = btStop, limit = btTarget)
+        else
+            btRejected += 1
+            btRejectedAt := time
+            btRejectedReason := longSweepExtreme - syminfo.mintick >= close ? "Long stop not below close" : "Long target not above close"
+            btRejectedLevels := str.tostring(longSweepExtreme - syminfo.mintick) + " / " + str.tostring(close) + " / " + str.tostring(latestSwingHigh)
+    else if shortSignal and not longSignal
+        if not na(shortSweepExtreme) and not na(latestSwingLow) and shortSweepExtreme + syminfo.mintick > close and latestSwingLow < close
+            btStop := shortSweepExtreme + syminfo.mintick
+            btTarget := latestSwingLow
+            btEligible += 1
+            strategy.entry("Short", strategy.short)
+            strategy.exit("Short bracket", "Short", stop = btStop, limit = btTarget)
+        else
+            btRejected += 1
+            btRejectedAt := time
+            btRejectedReason := shortSweepExtreme + syminfo.mintick <= close ? "Short stop not above close" : "Short target not below close"
+            btRejectedLevels := str.tostring(shortSweepExtreme + syminfo.mintick) + " / " + str.tostring(close) + " / " + str.tostring(latestSwingLow)
+if strategy.position_size > 0
+    strategy.exit("Long bracket", "Long", stop = btStop, limit = btTarget)
+if strategy.position_size < 0
+    strategy.exit("Short bracket", "Short", stop = btStop, limit = btTarget)
+if barstate.isconfirmed and time_close >= btEnd
+    strategy.cancel_all()
+    strategy.close_all(comment = "End of test window", immediately = true)
+
+if longSignal
+    longState := 0
+    longFvgTop := na
+    longFvgBottom := na
+    longSweepExtreme := na
+    longSweepBar := na
+    longMssBar := na
+    longRetracementBar := na
+    longMicroHigh := na
+    longMicroHighBar := na
+    longMicroLow := na
+    longMicroLowBar := na
+    if not na(longFvgBox)
+        box.set_right(longFvgBox, bar_index)
+        longFvgBox := na
+if shortSignal
+    shortState := 0
+    shortFvgTop := na
+    shortFvgBottom := na
+    shortSweepExtreme := na
+    shortSweepBar := na
+    shortMssBar := na
+    shortRetracementBar := na
+    shortMicroHigh := na
+    shortMicroHighBar := na
+    shortMicroLow := na
+    shortMicroLowBar := na
+    if not na(shortFvgBox)
+        box.set_right(shortFvgBox, bar_index)
+        shortFvgBox := na
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Visuals. Pivot offsets show the reference candle; detection is delayed.
+// ─────────────────────────────────────────────────────────────────────────────
+plotshape(showSwings and newSwingHigh, title = "Swing High", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.tiny, offset = -swingLength, text = "SH")
+plotshape(showSwings and newSwingLow, title = "Swing Low", style = shape.triangleup, location = location.belowbar, color = color.green, size = size.tiny, offset = -swingLength, text = "SL")
+plot(showLiquidity ? latestSwingHigh : na, title = "BSL", color = color.new(color.red, 40), style = plot.style_stepline)
+plot(showLiquidity ? latestSwingLow : na, title = "SSL", color = color.new(color.green, 40), style = plot.style_stepline)
+
+plotshape(showSweeps and bullishSslSweep, title = "Bullish SSL Sweep", style = shape.labelup, location = location.belowbar, color = color.green, textcolor = color.white, text = "SSL Sweep", size = size.tiny)
+plotshape(showSweeps and bearishBslSweep, title = "Bearish BSL Sweep", style = shape.labeldown, location = location.abovebar, color = color.red, textcolor = color.white, text = "BSL Sweep", size = size.tiny)
+plotshape(showDisplacement and bullishDisplacement, title = "Bullish Displacement", style = shape.circle, location = location.belowbar, color = color.new(color.green, 0), size = size.tiny, text = "D")
+plotshape(showDisplacement and bearishDisplacement, title = "Bearish Displacement", style = shape.circle, location = location.abovebar, color = color.new(color.red, 0), size = size.tiny, text = "D")
+plotshape(showMss and bullishMss, title = "Bullish MSS", style = shape.labelup, location = location.belowbar, color = color.new(color.teal, 0), text = "MSS", size = size.tiny)
+plotshape(showMss and bearishMss, title = "Bearish MSS", style = shape.labeldown, location = location.abovebar, color = color.new(color.orange, 0), text = "MSS", size = size.tiny)
+
+if showFvg and longSetupFvg
+    longFvgBox := box.new(left = bar_index, top = longFvgTop, right = bar_index + 1, bottom = longFvgBottom, bgcolor = color.new(color.green, 85), border_color = color.green)
+if showFvg and shortSetupFvg
+    shortFvgBox := box.new(left = bar_index, top = shortFvgTop, right = bar_index + 1, bottom = shortFvgBottom, bgcolor = color.new(color.red, 85), border_color = color.red)
+if showFvg and longState > 1 and not na(longFvgBox)
+    box.set_right(longFvgBox, bar_index)
+if showFvg and shortState > 1 and not na(shortFvgBox)
+    box.set_right(shortFvgBox, bar_index)
+
+plotshape(showRetracement and longRetracement, title = "Bullish FVG Retracement", style = shape.diamond, location = location.belowbar, color = color.new(color.green, 0), size = size.tiny, text = "RET")
+plotshape(showRetracement and shortRetracement, title = "Bearish FVG Retracement", style = shape.diamond, location = location.abovebar, color = color.new(color.red, 0), size = size.tiny, text = "RET")
+plotshape(showMss and bullishMicroMss, title = "Bullish Micro MSS", style = shape.labelup, location = location.belowbar, color = color.new(color.blue, 0), text = "Micro MSS", size = size.tiny)
+plotshape(showMss and bearishMicroMss, title = "Bearish Micro MSS", style = shape.labeldown, location = location.abovebar, color = color.new(color.purple, 0), text = "Micro MSS", size = size.tiny)
+plotshape(showSignals and longSignal, title = "LONG Signal", style = shape.labelup, location = location.belowbar, color = color.blue, textcolor = color.white, text = "LONG", size = size.small)
+plotshape(showSignals and shortSignal, title = "SHORT Signal", style = shape.labeldown, location = location.abovebar, color = color.purple, textcolor = color.white, text = "SHORT", size = size.small)
+
+alertcondition(longSignal, title = "ICT LONG Signal", message = "ICT Detector V1 LONG signal")
+alertcondition(shortSignal, title = "ICT SHORT Signal", message = "ICT Detector V1 SHORT signal")
+
+plot(btEligible, "Eligible entries", display = display.data_window)
+plot(btRejected, "Rejected invalid brackets", display = display.data_window)
+
+var int btFirstTime = time
+var int btLongSignals = 0
+var int btShortSignals = 0
+var int btWindowBars = 0
+if barstate.isconfirmed and btInWindow
+    btWindowBars += 1
+    if longSignal
+        btLongSignals += 1
+    if shortSignal
+        btShortSignals += 1
+var table btDiagnostics = table.new(position.top_right, 2, 10, bgcolor = color.white)
+if barstate.islastconfirmedhistory or barstate.islast
+    table.cell(btDiagnostics, 0, 0, "First loaded bar", text_color = color.black)
+    table.cell(btDiagnostics, 1, 0, str.format_time(btFirstTime, "yyyy-MM-dd HH:mm", "UTC"), text_color = color.black)
+    table.cell(btDiagnostics, 0, 1, "Window bars", text_color = color.black)
+    table.cell(btDiagnostics, 1, 1, str.tostring(btWindowBars), text_color = color.black)
+    table.cell(btDiagnostics, 0, 2, "Raw LONG / SHORT", text_color = color.black)
+    table.cell(btDiagnostics, 1, 2, str.tostring(btLongSignals) + " / " + str.tostring(btShortSignals), text_color = color.black)
+    table.cell(btDiagnostics, 0, 3, "Eligible entries", text_color = color.black)
+    table.cell(btDiagnostics, 1, 3, str.tostring(btEligible), text_color = color.black)
+    table.cell(btDiagnostics, 0, 4, "Invalid bracket skips", text_color = color.black)
+    table.cell(btDiagnostics, 1, 4, str.tostring(btRejected), text_color = color.black)
+    table.cell(btDiagnostics, 0, 5, "Closed trades", text_color = color.black)
+    table.cell(btDiagnostics, 1, 5, str.tostring(strategy.closedtrades), text_color = color.black)
+    table.cell(btDiagnostics, 0, 6, "Net P/L (USD)", text_color = color.black)
+    table.cell(btDiagnostics, 1, 6, str.tostring(strategy.netprofit, "#.##"), text_color = color.black)
+
+    table.cell(btDiagnostics, 0, 7, "Rejected bar UTC", text_color = color.black)
+    table.cell(btDiagnostics, 1, 7, na(btRejectedAt) ? "-" : str.format_time(btRejectedAt, "yyyy-MM-dd HH:mm", "UTC"), text_color = color.black)
+    table.cell(btDiagnostics, 0, 8, "Reason", text_color = color.black)
+    table.cell(btDiagnostics, 1, 8, btRejectedReason, text_color = color.black)
+    table.cell(btDiagnostics, 0, 9, "SL / close / TP", text_color = color.black)
+    table.cell(btDiagnostics, 1, 9, btRejectedLevels, text_color = color.black)
