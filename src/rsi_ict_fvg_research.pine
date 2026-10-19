@@ -1,0 +1,309 @@
+//@version=6
+strategy("RSI ICT FVG Research", "RSI ICT BT", overlay = true, initial_capital = 10000, currency = currency.USD, default_qty_type = strategy.percent_of_equity, default_qty_value = 10, pyramiding = 0, commission_type = strategy.commission.percent, commission_value = 0.1, slippage = 10, margin_long = 100, margin_short = 100, process_orders_on_close = false, calc_on_order_fills = false, calc_on_every_tick = false, use_bar_magnifier = false)
+// Long/Short research strategy. No live connection. Original V1 is untouched.
+// 2R uses signal close as the planned entry; next-open gaps alter actual R.
+useStoch = input.bool(false, "Require Stochastic confirmation (B)", group = "Variant")
+startTime = input.time(timestamp("21 Jul 2026 00:00 +0000"), "Start UTC", group = "Test window")
+endTime = input.time(timestamp("19 Oct 2026 00:00 +0000"), "End UTC", group = "Test window")
+rsiLength = input.int(14, "RSI period", minval = 1, group = "Oscillators")
+maLength = input.int(14, "RSI SMA period", minval = 1, group = "Oscillators")
+recentBars = input.int(5, "RSI lookback including current", minval = 1, group = "Oscillators")
+rsiThreshold = input.float(20, "RSI oversold (strict)", group = "Oscillators")
+rsiUpper = input.float(80, "RSI overbought (strict)", group = "Oscillators")
+stochLength = input.int(14, "Stoch lookback", minval = 1, group = "Oscillators")
+smoothK = input.int(3, "K smoothing", minval = 1, group = "Oscillators")
+smoothD = input.int(3, "D smoothing", minval = 1, group = "Oscillators")
+stochThreshold = input.float(30, "Long Stoch lines below", group = "Oscillators")
+stochUpper = input.float(70, "Short Stoch lines above", group = "Oscillators")
+swingLength = input.int(2, "Pivot length", minval = 1, group = "Structure")
+confirmBars = input.int(5, "Confirmation deadline after sweep", minval = 1, group = "Structure")
+retestBars = input.int(10, "Retest deadline after all confirmations", minval = 1, group = "Structure")
+atrLength = input.int(14, "ATR period", minval = 1, group = "Structure")
+bodyAtr = input.float(1.5, "Displacement body / ATR", minval = 0, group = "Structure")
+bodyRatio = input.float(0.7, "Displacement body / range", minval = 0, maxval = 1, group = "Structure")
+minFvg = input.float(0.1, "Minimum FVG / ATR", minval = 0, group = "Structure")
+rewardRisk = input.float(2, "Planned reward / risk", minval = 0.1, group = "Risk")
+showZones = input.bool(true, "Show setup zones", group = "Display")
+
+rsi = ta.rsi(close, rsiLength)
+rsiMa = ta.sma(rsi, maLength)
+recentLowRsi = ta.lowest(rsi, recentBars)
+rsiCross = ta.crossover(rsi, rsiMa)
+rsiTrigger = barstate.isconfirmed and recentLowRsi < rsiThreshold and rsiCross
+recentHighRsi = ta.highest(rsi, recentBars)
+rsiCrossShort = ta.crossunder(rsi, rsiMa)
+rsiTriggerShort = barstate.isconfirmed and recentHighRsi > rsiUpper and rsiCrossShort
+rawK = ta.stoch(close, high, low, stochLength)
+k = ta.sma(rawK, smoothK)
+d = ta.sma(k, smoothD)
+stochCross = ta.crossover(k, d)
+stochTrigger = barstate.isconfirmed and stochCross and k < stochThreshold and d < stochThreshold
+stochCrossShort = ta.crossunder(k, d)
+stochTriggerShort = barstate.isconfirmed and stochCrossShort and k > stochUpper and d > stochUpper
+atr = ta.atr(atrLength)
+body = close - open
+candleRange = high - low
+displacement = body > 0 and body >= bodyAtr * atr and candleRange > 0 and body / candleRange >= bodyRatio
+displacementShort = body < 0 and -body >= bodyAtr * atr and candleRange > 0 and -body / candleRange >= bodyRatio
+pivotHigh = ta.pivothigh(high, swingLength, swingLength)
+pivotLow = ta.pivotlow(low, swingLength, swingLength)
+var float lastHigh = na
+var float lastLow = na
+// Prior-bar confirmed levels are the sweep references.
+sweep = barstate.isconfirmed and not na(lastLow) and not na(lastHigh) and low < lastLow and close > lastLow
+
+sweepShort = barstate.isconfirmed and not na(lastLow) and not na(lastHigh) and high > lastHigh and close < lastHigh
+
+var int phase = 0
+var int sweepBar = na
+var float sweepLow = na
+var float breakHigh = na
+var bool rsiSeen = false
+var bool stochSeen = false
+var int mssBar = na
+var float zoneTop = na
+var float zoneBottom = na
+var int fvgBar = na
+var int readyBar = na
+var float tradeStop = na
+var float tradeTarget = na
+var box zoneBox = na
+var int firstLoaded = time
+var int evalBars = 0
+var int sweeps = 0
+var int rsiEvents = 0
+var int stochEvents = 0
+var int mssEvents = 0
+var int fvgEvents = 0
+var int readyEvents = 0
+var int entryEvents = 0
+var int invalidations = 0
+var int expiryEvents = 0
+var int sPhase = 0
+var int sSweepBar = na
+var float sSweepHigh = na
+var float sBreakLow = na
+var bool sRsiSeen = false
+var bool sStochSeen = false
+var int sMssBar = na
+var float sZoneTop = na
+var float sZoneBottom = na
+var int sFvgBar = na
+var int sReadyBar = na
+var box sZoneBox = na
+var int sSweeps = 0
+var int sRsiEvents = 0
+var int sStochEvents = 0
+var int sMssEvents = 0
+var int sFvgEvents = 0
+var int sReadyEvents = 0
+var int sEntryEvents = 0
+var int sInvalidations = 0
+var int sExpiryEvents = 0
+var int conflicts = 0
+bool longCandidate = false
+bool shortCandidate = false
+float longStopCandidate = na
+float longTargetCandidate = na
+float shortStopCandidate = na
+float shortTargetCandidate = na
+bool entered = false
+bool enteredShort = false
+bool readyNow = false
+bool fvgNow = false
+inWindow = time >= startTime and time_close < endTime
+
+if barstate.isconfirmed
+    if inWindow
+        evalBars += 1
+        if rsiTrigger
+            rsiEvents += 1
+        if stochTrigger
+            stochEvents += 1
+        if rsiTriggerShort
+            sRsiEvents += 1
+        if stochTriggerShort
+            sStochEvents += 1
+    if strategy.position_size == 0 and inWindow
+        if phase == 0 and sweep
+            phase := 1
+            sweepBar := bar_index
+            sweepLow := low
+            breakHigh := lastHigh
+            rsiSeen := false
+            stochSeen := false
+            mssBar := na
+            zoneTop := na
+            zoneBottom := na
+            fvgBar := na
+            readyBar := na
+            sweeps += 1
+        if phase > 0
+            // Freeze sweep anchor; subsequent sweeps do not extend this setup.
+            if bar_index > sweepBar and low <= sweepLow
+                phase := 0
+                invalidations += 1
+            else if phase == 1 and bar_index - sweepBar > confirmBars
+                phase := 0
+                expiryEvents += 1
+            else if phase == 2 and bar_index - readyBar > retestBars
+                phase := 0
+                expiryEvents += 1
+            else
+                if phase == 1
+                    rsiSeen := rsiSeen or rsiTrigger
+                    stochSeen := stochSeen or stochTrigger
+                    // A bullish close breaks the high frozen at sweep time.
+                    if na(mssBar) and bar_index > sweepBar and displacement and close > breakHigh
+                        mssBar := bar_index
+                        mssEvents += 1
+                    // Standard FVG immediately following that displacement/MSS.
+                    if na(fvgBar) and not na(mssBar) and bar_index == mssBar + 1 and low > high[2] and low - high[2] >= minFvg * atr
+                        fvgBar := bar_index
+                        zoneTop := low
+                        zoneBottom := high[2]
+                        fvgEvents += 1
+                        fvgNow := true
+                        if showZones
+                            zoneBox := box.new(bar_index, zoneTop, bar_index, zoneBottom, border_color = color.teal, bgcolor = color.new(color.teal, 85))
+                    if rsiSeen and (not useStoch or stochSeen) and not na(fvgBar)
+                        phase := 2
+                        readyBar := bar_index
+                        readyEvents += 1
+                        readyNow := true
+                // Entry is only on the FIRST overlap AFTER all confirmations.
+                if phase == 2 and bar_index > readyBar and high >= zoneBottom and low <= zoneTop
+                    if close > open and close > sweepLow + syminfo.mintick
+                        longStopCandidate := sweepLow - syminfo.mintick
+                        longTargetCandidate := close + rewardRisk * (close - longStopCandidate)
+                        longCandidate := true
+                    else
+                        invalidations += 1
+                    phase := 0
+        if sPhase == 0 and sweepShort
+            sPhase := 1
+            sSweepBar := bar_index
+            sSweepHigh := high
+            sBreakLow := lastLow
+            sRsiSeen := false
+            sStochSeen := false
+            sMssBar := na
+            sZoneTop := na
+            sZoneBottom := na
+            sFvgBar := na
+            sReadyBar := na
+            sSweeps += 1
+        if sPhase > 0
+            if bar_index > sSweepBar and high >= sSweepHigh
+                sPhase := 0
+                sInvalidations += 1
+            else if sPhase == 1 and bar_index - sSweepBar > confirmBars
+                sPhase := 0
+                sExpiryEvents += 1
+            else if sPhase == 2 and bar_index - sReadyBar > retestBars
+                sPhase := 0
+                sExpiryEvents += 1
+            else
+                if sPhase == 1
+                    sRsiSeen := sRsiSeen or rsiTriggerShort
+                    sStochSeen := sStochSeen or stochTriggerShort
+                    if na(sMssBar) and bar_index > sSweepBar and displacementShort and close < sBreakLow
+                        sMssBar := bar_index
+                        sMssEvents += 1
+                    if na(sFvgBar) and not na(sMssBar) and bar_index == sMssBar + 1 and high < low[2] and low[2] - high >= minFvg * atr
+                        sFvgBar := bar_index
+                        sZoneTop := low[2]
+                        sZoneBottom := high
+                        sFvgEvents += 1
+                        if showZones
+                            sZoneBox := box.new(bar_index, sZoneTop, bar_index, sZoneBottom, border_color = color.orange, bgcolor = color.new(color.orange, 85))
+                    if sRsiSeen and (not useStoch or sStochSeen) and not na(sFvgBar)
+                        sPhase := 2
+                        sReadyBar := bar_index
+                        sReadyEvents += 1
+                if sPhase == 2 and bar_index > sReadyBar and high >= sZoneBottom and low <= sZoneTop
+                    if close < open and close < sSweepHigh - syminfo.mintick
+                        shortStopCandidate := sSweepHigh + syminfo.mintick
+                        shortTargetCandidate := close - rewardRisk * (shortStopCandidate - close)
+                        shortCandidate := true
+                    else
+                        sInvalidations += 1
+                    sPhase := 0
+        if longCandidate and shortCandidate
+            conflicts += 1
+        else if longCandidate
+            tradeStop := longStopCandidate
+            tradeTarget := longTargetCandidate
+            if tradeStop >= close or tradeTarget <= close
+                runtime.error("Invalid Long bracket")
+            strategy.entry("Long", strategy.long)
+            strategy.exit("Long bracket", "Long", stop = tradeStop, limit = tradeTarget)
+            entered := true
+            entryEvents += 1
+        else if shortCandidate
+            tradeStop := shortStopCandidate
+            tradeTarget := shortTargetCandidate
+            if tradeStop <= close or tradeTarget >= close or tradeTarget <= 0
+                runtime.error("Invalid Short bracket")
+            strategy.entry("Short", strategy.short)
+            strategy.exit("Short bracket", "Short", stop = tradeStop, limit = tradeTarget)
+            enteredShort := true
+            sEntryEvents += 1
+        if entered or enteredShort
+            phase := 0
+            sPhase := 0
+    if not na(zoneBox)
+        box.set_right(zoneBox, bar_index)
+        if phase == 0
+            zoneBox := na
+    if not na(sZoneBox)
+        box.set_right(sZoneBox, bar_index)
+        if sPhase == 0
+            sZoneBox := na
+    if strategy.position_size > 0
+        strategy.exit("Long bracket", "Long", stop = tradeStop, limit = tradeTarget)
+    if strategy.position_size < 0
+        strategy.exit("Short bracket", "Short", stop = tradeStop, limit = tradeTarget)
+    if time_close >= endTime
+        strategy.cancel_all()
+        strategy.close_all(comment = "Window end", immediately = true)
+        phase := 0
+        sPhase := 0
+    if not na(pivotHigh)
+        lastHigh := pivotHigh
+    if not na(pivotLow)
+        lastLow := pivotLow
+
+plotshape(inWindow and rsiTrigger, "RSI trigger", shape.circle, location.belowbar, color.blue, text = "RSI", size = size.tiny)
+plotshape(readyNow, "Setup ready", shape.diamond, location.belowbar, color.teal, text = "READY", size = size.tiny)
+plotshape(inWindow and rsiTriggerShort, "Short RSI trigger", shape.circle, location.abovebar, color.purple, text = "RSI", size = size.tiny)
+plotshape(enteredShort, "Short entry submitted", shape.triangledown, location.abovebar, color.red, text = "SHORT", size = size.small)
+plotshape(entered, "Entry submitted", shape.triangleup, location.belowbar, color.green, text = "LONG", size = size.small)
+plot(strategy.position_size != 0 ? tradeStop : na, "Stop", color.red, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? tradeTarget : na, "Target", color.green, style = plot.style_linebr)
+plot(rsi, "RSI", display = display.data_window)
+plot(rsiMa, "RSI SMA", display = display.data_window)
+plot(k, "Stoch K", display = display.data_window)
+plot(d, "Stoch D", display = display.data_window)
+var table stats = table.new(position.top_right, 2, 10, bgcolor = color.white)
+if barstate.islastconfirmedhistory or barstate.islast
+    table.cell(stats, 0, 0, "Variant / First UTC", text_color = color.black)
+    table.cell(stats, 1, 0, (useStoch ? "B" : "A") + " / " + str.format_time(firstLoaded, "yyyy-MM-dd", "UTC"), text_color = color.black)
+    table.cell(stats, 0, 1, "Window bars", text_color = color.black)
+    table.cell(stats, 1, 1, str.tostring(evalBars), text_color = color.black)
+    table.cell(stats, 0, 2, "RSI L,S / Stoch L,S", text_color = color.black)
+    table.cell(stats, 1, 2, str.tostring(rsiEvents) + "," + str.tostring(sRsiEvents) + " / " + str.tostring(stochEvents) + "," + str.tostring(sStochEvents), text_color = color.black)
+    table.cell(stats, 0, 3, "Sweeps / MSS / FVG (L,S)", text_color = color.black)
+    table.cell(stats, 1, 3, str.tostring(sweeps) + "," + str.tostring(sSweeps) + " / " + str.tostring(mssEvents) + "," + str.tostring(sMssEvents) + " / " + str.tostring(fvgEvents) + "," + str.tostring(sFvgEvents), text_color = color.black)
+    table.cell(stats, 0, 4, "Ready L,S / Entry L,S", text_color = color.black)
+    table.cell(stats, 1, 4, str.tostring(readyEvents) + "," + str.tostring(sReadyEvents) + " / " + str.tostring(entryEvents) + "," + str.tostring(sEntryEvents), text_color = color.black)
+    table.cell(stats, 0, 5, "Invalid / Expired", text_color = color.black)
+    table.cell(stats, 1, 5, str.tostring(invalidations + sInvalidations) + " / " + str.tostring(expiryEvents + sExpiryEvents), text_color = color.black)
+    table.cell(stats, 0, 6, "Closed trades", text_color = color.black)
+    table.cell(stats, 1, 6, str.tostring(strategy.closedtrades), text_color = color.black)
+    table.cell(stats, 0, 7, "Net P/L USD", text_color = color.black)
+    table.cell(stats, 1, 7, str.tostring(strategy.netprofit, "#.##"), text_color = color.black)
+    table.cell(stats, 0, 8, "Win rate %", text_color = color.black)
+    table.cell(stats, 1, 8, strategy.closedtrades > 0 ? str.tostring(100.0 * strategy.wintrades / strategy.closedtrades, "#.##") : "N/A", text_color = color.black)
+    table.cell(stats, 0, 9, "Profit factor", text_color = color.black)
+    table.cell(stats, 1, 9, strategy.grossloss != 0 ? str.tostring(strategy.grossprofit / math.abs(strategy.grossloss), "#.##") : "N/A", text_color = color.black)
